@@ -44,4 +44,5 @@ EXPOSE 8080
 # We use 'python -m backend.app.main' or similar, but let's check the structure
 # The project root is /app, so we need to set PYTHONPATH
 ENV PYTHONPATH=/app
-CMD ["python", "backend/app/main.py"]
+CMD ["uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+
