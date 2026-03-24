@@ -19,9 +19,13 @@ import os
 import uuid
 from typing import Any
 
-from .tools import GITHUB_TOOLS
+import httpx
+from huggingface_hub import AsyncInferenceClient
 
-# Pre-build a map of tool_name → set of valid parameter names.
+from custom_mcp_sdk import MCPHost
+
+from .evals import EvalTracker
+from .tools import GITHUB_TOOLS
 # Used by the hallucination guard to detect when the model passes
 # result-shaped data (e.g. {"content": "...", "files": [...]}) as arguments.
 # Multiple entries with the same name (issue_write, pull_request_read) are
@@ -31,13 +35,6 @@ for _t in GITHUB_TOOLS:
     _name = _t["function"]["name"]
     _props = set(_t["function"]["parameters"].get("properties", {}).keys())
     TOOL_PARAM_NAMES.setdefault(_name, set()).update(_props)
-
-import httpx
-from huggingface_hub import AsyncInferenceClient
-
-from custom_mcp_sdk import MCPHost
-
-from .evals import EvalTracker
 
 logger = logging.getLogger("zolt.agent")
 
