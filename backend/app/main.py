@@ -135,11 +135,10 @@ app.add_middleware(
 )
 
 # ── Static Files (Frontend) ───────────────────────────────────────────
-# Mount the built frontend static directory
-# This should match where the root Dockerfile places the 'build' folder
 STATIC_DIR = os.path.join(PROJECT_ROOT, "backend", "static")
 if os.path.isdir(STATIC_DIR):
-    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+    # Mount build/static so browser /static/js/... -> backend/static/static/js/...
+    app.mount("/static", StaticFiles(directory=os.path.join(STATIC_DIR, "static")), name="static")
 
 # ── Request / Response Models ─────────────────────────────────────────
 
