@@ -45,7 +45,7 @@ GITHUB_TOOLS: list[dict] = [
                 "READ-ONLY. Fetch the raw contents of an existing file in a GitHub repo. "
                 "Use when the user says: 'show me the code in X', 'what's in file Y', "
                 "'read config Z', 'show me the README', 'open this file'. "
-                "You MUST know the exact file path. If unsure of the path, call list_directory first. "
+                "You MUST know the exact file path. If unsure of the path, call get_repository_tree first. "
                 "Do NOT use this to create or write files — use create_or_update_file for that. "
                 "Do NOT use this if the user said 'create', 'write', 'save', or 'add a file'."
             ),
@@ -72,7 +72,7 @@ GITHUB_TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "list_directory",
+            "name": "get_repository_tree",
             "description": (
                 "List files and subdirectories at a given path in the repo tree. "
                 "Use when the user asks: 'what files are in X folder', "
@@ -84,11 +84,12 @@ GITHUB_TOOLS: list[dict] = [
                 "properties": {
                     "owner": {"type": "string", "description": "GitHub username or org. ALWAYS include. Use 'yukihim' unless told otherwise."},
                     "repo":  {"type": "string", "description": "Repository name. ALWAYS include. Use 'ZOLT' unless told otherwise."},
-                    "path":  {
+                    "path_filter": {
                         "type": "string",
-                        "description": "Directory path relative to repo root. Use '' or '.' for the root. Default: ''."
+                        "description": "Optional path prefix to filter results (e.g., 'src/'). Omit for the full tree."
                     },
-                    "ref":   _ref(),
+                    "tree_sha": {"type": "string", "description": "Branch name, tag, or SHA to read the tree from. Default: repo's default branch."},
+                    "recursive": {"type": "boolean", "description": "If true, returns the full recursive subtree. Default: false."},
                 },
                 "required": ["owner", "repo"],
             },
@@ -221,11 +222,11 @@ GITHUB_TOOLS: list[dict] = [
                                 "path":    {"type": "string", "description": "File path relative to repo root."},
                                 "content": {"type": "string", "description": "Full file content as a UTF-8 string."},
                             },
-                            "required": ["owner", "repo", "branch", "message", "files"],
+                            "required": ["path", "content"],
                         },
                     },
                 },
-                "required": ["branch", "message", "files"],
+                "required": ["owner", "repo", "branch", "message", "files"],
             },
         },
     },
@@ -410,7 +411,7 @@ GITHUB_TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "get_issue",
+            "name": "issue_read",
             "description": (
                 "Get full details of a single issue: title, body, labels, assignees, "
                 "comment count, and open/closed status. "
@@ -419,11 +420,16 @@ GITHUB_TOOLS: list[dict] = [
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "method": {
+                        "type": "string",
+                        "enum": ["get", "get_comments", "get_sub_issues", "get_labels"],
+                        "description": "Use 'get' to fetch issue details. Required."
+                    },
                     "owner": {"type": "string", "description": "GitHub username or org. ALWAYS include. Use 'yukihim' unless told otherwise."},
                     "repo":  {"type": "string", "description": "Repository name. ALWAYS include. Use 'ZOLT' unless told otherwise."},
                     "issue_number": {"type": "integer", "description": "The issue number (e.g., 42). Required."},
                 },
-                "required": ["owner", "repo", "issue_number"],
+                "required": ["method", "owner", "repo", "issue_number"],
             },
         },
     },
@@ -431,24 +437,26 @@ GITHUB_TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "create_issue",
+            "name": "issue_write",
             "description": (
                 "Create a new GitHub issue. Use when the user says: "
                 "'open an issue', 'file a bug', 'create a ticket', 'report this problem'. "
+                "Set method='create'. "
                 "SENSITIVE: requires user approval before execution."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "method":    {"type": "string", "enum": ["create", "update"], "description": "Use 'create' to open a new issue. Required."},
                     "owner": {"type": "string", "description": "GitHub username or org. ALWAYS include. Use 'yukihim' unless told otherwise."},
                     "repo":  {"type": "string", "description": "Repository name. ALWAYS include. Use 'ZOLT' unless told otherwise."},
-                    "title":     {"type": "string", "description": "Short issue title. Required."},
+                    "title":     {"type": "string", "description": "Short issue title. Required for create."},
                     "body":      {"type": "string", "description": "Full issue description in Markdown. Optional but recommended."},
                     "labels":    {"type": "array", "items": {"type": "string"}, "description": "Label names to apply. Optional."},
                     "assignees": {"type": "array", "items": {"type": "string"}, "description": "GitHub usernames to assign. Optional."},
                     "milestone": {"type": "integer", "description": "Milestone number to associate. Optional."},
                 },
-                "required": ["owner", "repo", "issue_number"],
+                "required": ["method", "owner", "repo", "title"],
             },
         },
     },
@@ -456,16 +464,17 @@ GITHUB_TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "update_issue",
+            "name": "issue_write",
             "description": (
                 "Update an existing issue: change title, body, state, labels, or assignees. "
                 "Use when the user says: 'close issue #N', 'reopen issue #N', 'edit issue #N', "
-                "'relabel issue', 'reassign issue'. "
+                "'relabel issue', 'reassign issue'. Set method='update'. "
                 "SENSITIVE: requires user approval before execution."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "method":       {"type": "string", "enum": ["create", "update"], "description": "Use 'update' to modify an existing issue. Required."},
                     "owner": {"type": "string", "description": "GitHub username or org. ALWAYS include. Use 'yukihim' unless told otherwise."},
                     "repo":  {"type": "string", "description": "Repository name. ALWAYS include. Use 'ZOLT' unless told otherwise."},
                     "issue_number": {"type": "integer", "description": "Issue number to update. Required."},
@@ -476,7 +485,7 @@ GITHUB_TOOLS: list[dict] = [
                     "assignees":    {"type": "array", "items": {"type": "string"}, "description": "Replace all assignees with this list. Optional."},
                     "milestone":    {"type": "integer", "description": "Milestone number, or null to clear. Optional."},
                 },
-                "required": ["owner", "repo", "issue_number"],
+                "required": ["method", "owner", "repo", "issue_number"],
             },
         },
     },
@@ -484,7 +493,7 @@ GITHUB_TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "add_comment_to_issue",
+            "name": "add_issue_comment",
             "description": (
                 "Post a comment on an existing issue or pull request. "
                 "Use when the user says: 'comment on issue #N', 'reply to issue', 'add a note to ticket #N'. "
@@ -498,7 +507,7 @@ GITHUB_TOOLS: list[dict] = [
                     "issue_number": {"type": "integer", "description": "Issue or PR number to comment on. Required."},
                     "body":         {"type": "string", "description": "Comment text in Markdown. Required."},
                 },
-                "required": ["owner", "repo", "issue_number"],
+                "required": ["owner", "repo", "issue_number", "body"],
             },
         },
     },
@@ -563,20 +572,26 @@ GITHUB_TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "get_pull_request",
+            "name": "pull_request_read",
             "description": (
                 "Get full details of a single pull request: title, body, diff stats, "
                 "reviewers, merge status, and CI check summary. "
-                "Use when the user mentions a specific PR like 'PR #12' or 'pull request 5'."
+                "Use when the user mentions a specific PR like 'PR #12' or 'pull request 5'. "
+                "Set method='get'."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "method": {
+                        "type": "string",
+                        "enum": ["get", "get_diff", "get_status", "get_files", "get_review_comments", "get_reviews", "get_comments", "get_check_runs"],
+                        "description": "Use 'get' for full PR details. Required."
+                    },
                     "owner": {"type": "string", "description": "GitHub username or org. ALWAYS include. Use 'yukihim' unless told otherwise."},
                     "repo":  {"type": "string", "description": "Repository name. ALWAYS include. Use 'ZOLT' unless told otherwise."},
-                    "pull_number": {"type": "integer", "description": "The pull request number. Required."},
+                    "pullNumber": {"type": "integer", "description": "The pull request number. Required."},
                 },
-                "required": ["owner", "repo", "pull_number"],
+                "required": ["method", "owner", "repo", "pullNumber"],
             },
         },
     },
@@ -663,20 +678,25 @@ GITHUB_TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "get_pull_request_files",
+            "name": "pull_request_read",
             "description": (
                 "List all files changed in a pull request with their diff stats. "
                 "Use when the user asks: 'what files does PR #N change', 'show the diff for PR #N', "
-                "'what did this PR touch'."
+                "'what did this PR touch'. Set method='get_files'."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "method": {
+                        "type": "string",
+                        "enum": ["get", "get_diff", "get_status", "get_files", "get_review_comments", "get_reviews", "get_comments", "get_check_runs"],
+                        "description": "Use 'get_files' to list changed files. Required."
+                    },
                     "owner": {"type": "string", "description": "GitHub username or org. ALWAYS include. Use 'yukihim' unless told otherwise."},
                     "repo":  {"type": "string", "description": "Repository name. ALWAYS include. Use 'ZOLT' unless told otherwise."},
-                    "pull_number": {"type": "integer", "description": "PR number. Required."},
+                    "pullNumber": {"type": "integer", "description": "PR number. Required."},
                 },
-                "required": ["owner", "repo", "pull_number"],
+                "required": ["method", "owner", "repo", "pullNumber"],
             },
         },
     },
@@ -684,20 +704,25 @@ GITHUB_TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "get_pull_request_reviews",
+            "name": "pull_request_read",
             "description": (
                 "List all review decisions on a pull request: approved, changes requested, or commented. "
                 "Use when the user asks: 'who reviewed PR #N', 'is PR #N approved', "
-                "'what did reviewers say about PR #N'."
+                "'what did reviewers say about PR #N'. Set method='get_reviews'."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "method": {
+                        "type": "string",
+                        "enum": ["get", "get_diff", "get_status", "get_files", "get_review_comments", "get_reviews", "get_comments", "get_check_runs"],
+                        "description": "Use 'get_reviews' to list review decisions. Required."
+                    },
                     "owner": {"type": "string", "description": "GitHub username or org. ALWAYS include. Use 'yukihim' unless told otherwise."},
-                                       "repo":  {"type": "string", "description": "Repository name. ALWAYS include. Use 'ZOLT' unless told otherwise."},
-                    "pull_number": {"type": "integer", "description": "PR number. Required."},
+                    "repo":  {"type": "string", "description": "Repository name. ALWAYS include. Use 'ZOLT' unless told otherwise."},
+                    "pullNumber": {"type": "integer", "description": "PR number. Required."},
                 },
-                "required": ["owner", "repo", "pull_number"],
+                "required": ["method", "owner", "repo", "pullNumber"],
             },
         },
     },
@@ -705,19 +730,24 @@ GITHUB_TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "create_pull_request_review",
+            "name": "pull_request_review_write",
             "description": (
                 "Submit a review on a pull request: approve, request changes, or comment. "
                 "Use when the user says: 'approve PR #N', 'request changes on PR #N', "
-                "'leave a review on PR #N'. "
+                "'leave a review on PR #N'. Set method='submit_review'. "
                 "SENSITIVE: requires user approval before execution."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "method": {
+                        "type": "string",
+                        "enum": ["submit_review", "delete_pending_review", "resolve_thread", "unresolve_thread"],
+                        "description": "Use 'submit_review' to post a review. Required."
+                    },
                     "owner": {"type": "string", "description": "GitHub username or org. ALWAYS include. Use 'yukihim' unless told otherwise."},
                     "repo":  {"type": "string", "description": "Repository name. ALWAYS include. Use 'ZOLT' unless told otherwise."},
-                    "pull_number": {"type": "integer", "description": "PR number. Required."},
+                    "pullNumber": {"type": "integer", "description": "PR number. Required."},
                     "event":       {
                         "type": "string",
                         "enum": ["APPROVE", "REQUEST_CHANGES", "COMMENT"],
@@ -725,57 +755,29 @@ GITHUB_TOOLS: list[dict] = [
                     },
                     "body":        {"type": "string", "description": "Review comment text. Required for REQUEST_CHANGES and COMMENT."},
                 },
-                "required": ["owner", "repo", "pull_number", "event"],
+                "required": ["method", "owner", "repo", "pullNumber", "event"],
             },
         },
     },
 
-    # ── GIT REFS (revert / reset / tag) ──────────────────────────────────────
+    # ── GIT TAGS ──────────────────────────────────────────────────────────────
 
     {
         "type": "function",
         "function": {
-            "name": "get_ref",
+            "name": "list_tags",
             "description": (
-                "Get the current SHA a Git ref (branch or tag) points to. "
-                "Use this to look up what commit HEAD or a branch currently points at. "
-                "Example ref formats: 'heads/main', 'heads/feature-x', 'tags/v1.0'."
+                "List all tags in the repository. "
+                "Use when the user asks: 'what tags exist', 'show releases/tags', 'list all versions'."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "owner": {"type": "string", "description": "GitHub username or org. ALWAYS include. Use 'yukihim' unless told otherwise."},
                     "repo":  {"type": "string", "description": "Repository name. ALWAYS include. Use 'ZOLT' unless told otherwise."},
-                    "ref":   {"type": "string", "description": "Ref path WITHOUT 'refs/' prefix. Examples: 'heads/main', 'heads/dev', 'tags/v1.0'. Required."},
+                    "per_page": _per_page(),
                 },
-                "required": ["owner", "repo", "ref"],
-            },
-        },
-    },
-
-    {
-        "type": "function",
-        "function": {
-            "name": "update_ref",
-            "description": (
-                "Move a branch pointer to a different commit SHA. "
-                "This is the ONLY correct tool for: 'revert to commit X', 'reset branch to SHA Y', "
-                "'undo last N commits', 'go back to the first commit', 'hard reset main to X'. "
-                "WORKFLOW for revert: (1) call list_commits to find the target SHA, "
-                "(2) call update_ref with that SHA and force=true. "
-                "Do NOT use create_pull_request or any other tool for reverting. "
-                "SENSITIVE: requires user approval before execution."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "owner": {"type": "string", "description": "GitHub username or org. ALWAYS include. Use 'yukihim' unless told otherwise."},
-                    "repo":  {"type": "string", "description": "Repository name. ALWAYS include. Use 'ZOLT' unless told otherwise."},
-                    "ref":   {"type": "string", "description": "Ref path WITHOUT 'refs/' prefix. Example: 'heads/main'. Required."},
-                    "sha":   {"type": "string", "description": "The full commit SHA to point the branch at. Required. Get this from list_commits or get_commit."},
-                    "force": {"type": "boolean", "description": "Must be true when moving the branch backwards (revert/reset). Default: true."},
-                },
-                "required": ["owner", "repo", "ref", "sha"],
+                "required": ["owner", "repo"],
             },
         },
     },
@@ -783,45 +785,19 @@ GITHUB_TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "create_ref",
+            "name": "get_tag",
             "description": (
-                "Create a new Git ref (branch or tag) pointing at a specific commit SHA. "
-                "Use for: 'tag this commit as v1.0', 'create a tag at SHA X', "
-                "'create a branch from commit Y'. "
-                "For creating branches from existing branches use create_branch instead. "
-                "SENSITIVE: requires user approval before execution."
+                "Get details of a specific tag by name. "
+                "Use when the user asks: 'show tag v1.0', 'what commit does v2.3 point to'."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "owner": {"type": "string", "description": "GitHub username or org. ALWAYS include. Use 'yukihim' unless told otherwise."},
                     "repo":  {"type": "string", "description": "Repository name. ALWAYS include. Use 'ZOLT' unless told otherwise."},
-                    "ref":   {"type": "string", "description": "Full ref path WITH 'refs/' prefix. Examples: 'refs/heads/new-branch', 'refs/tags/v1.0'. Required."},
-                    "sha":   {"type": "string", "description": "The commit SHA this ref should point to. Required."},
+                    "tag":   {"type": "string", "description": "Tag name (e.g., 'v1.0.0'). Required."},
                 },
-                "required": ["owner", "repo", "ref", "sha"],
-            },
-        },
-    },
-
-    {
-        "type": "function",
-        "function": {
-            "name": "delete_ref",
-            "description": (
-                "Delete a Git ref (branch or tag). "
-                "Use when the user says: 'delete branch X', 'remove tag Y', 'clean up branch Z'. "
-                "Do NOT use to delete files — use delete_file for that. "
-                "SENSITIVE: requires user approval before execution."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "owner": {"type": "string", "description": "GitHub username or org. ALWAYS include. Use 'yukihim' unless told otherwise."},
-                    "repo":  {"type": "string", "description": "Repository name. ALWAYS include. Use 'ZOLT' unless told otherwise."},
-                    "ref":   {"type": "string", "description": "Ref path WITHOUT 'refs/' prefix. Examples: 'heads/my-branch', 'tags/v1.0'. Required."},
-                },
-                "required": ["owner", "repo", "ref"],
+                "required": ["owner", "repo", "tag"],
             },
         },
     },

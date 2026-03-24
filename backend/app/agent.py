@@ -21,7 +21,19 @@ from typing import Any
 
 from .tools import GITHUB_TOOLS
 
+# Pre-build a map of tool_name → set of valid parameter names.
+# Used by the hallucination guard to detect when the model passes
+# result-shaped data (e.g. {"content": "...", "files": [...]}) as arguments.
+# Multiple entries with the same name (issue_write, pull_request_read) are
+# merged — they share the same parameter set anyway.
+TOOL_PARAM_NAMES: dict[str, set[str]] = {}
+for _t in GITHUB_TOOLS:
+    _name = _t["function"]["name"]
+    _props = set(_t["function"]["parameters"].get("properties", {}).keys())
+    TOOL_PARAM_NAMES.setdefault(_name, set()).update(_props)
+
 import httpx
+from huggingface_hub import AsyncInferenceClient
 
 from custom_mcp_sdk import MCPHost
 
@@ -29,10 +41,10 @@ from .evals import EvalTracker, TurnMetrics
 
 logger = logging.getLogger("zolt.agent")
 
-# ── Provider-Agnostic LLM API Configuration ──────────────────────────
-API_BASE_URL = os.getenv("API_BASE_URL", "https://openrouter.ai/api/v1/chat/completions")
-API_KEY = os.getenv("API_KEY", os.getenv("OPENROUTER_API_KEY", ""))
-MODEL = os.getenv("MODEL", os.getenv("OPENROUTER_MODEL", "deepseek/deepseek-r1:free"))
+# ── Provider LLM API Configuration ──────────────────────────────────
+# Default to Hugging Face Space integration as per user direction
+API_TOKEN = os.getenv("API_TOKEN")
+MODEL = os.getenv("MODEL", "openai/gpt-oss-20b")
 
 SYSTEM_PROMPT = """\
 You are ZOLT, an AI IT Operations Coordinator. You help manage system health, \
@@ -49,11 +61,24 @@ NEVER summarize or guess if you can fetch real data.
 - If you need to call a tool, call it directly via the API side-channel.
 - Your goal is to be accurate; always call the appropriate tool first.
 
+### FILE AND CODE CONTENT — ABSOLUTE RULES
+- You MUST NEVER write, generate, invent, or assume the contents of any file.
+- You have NO knowledge of what any file in this repository contains.
+- The ONLY valid source of file content is a successful `get_file_contents` tool call.
+- If `get_file_contents` fails (Not Found, permission error, any error): STOP.
+  Tell the user the file could not be retrieved. Do NOT attempt to reconstruct
+  or guess what the file might contain based on its name or your training data.
+- NEVER pass invented file contents as an argument to any tool call.
+
+### WHEN TOOLS FAIL
+- If a tool returns an error, report that error to the user and stop.
+- Do NOT retry the same tool call with the same arguments.
+- Do NOT invent a result and continue as if the tool succeeded.
+- Do NOT pass a tool's error message or any fabricated data as arguments to another tool.
+
 The user's default GitHub repository is "yukihim/ZOLT". If the user asks general \
 questions like "latest commit?", "what are my issues?", or refers to "this project", \
-you MUST assume they are asking about owner="yukihim" and repo="ZOLT" without asking for help.
-
-If a tool call fails, explain the exact error clearly."""
+you MUST assume they are asking about owner="yukihim" and repo="ZOLT" without asking for help."""
 
 MAX_ITERATIONS = 10  # safety limit for tool-call loops
 
@@ -66,15 +91,14 @@ SENSITIVE_TOOLS = {
     "create_or_update_file",
     "push_files",
     "delete_file",
-    # Issues
-    "create_issue",
-    "update_issue",
-    "add_comment_to_issue",
-    # Pull requests
+    # Issues  (issue_write covers both create+update; add_issue_comment is the correct MCP name)
+    "issue_write",
+    "add_issue_comment",
+    # Pull requests  (pull_request_review_write is the correct MCP name)
     "create_pull_request",
     "update_pull_request",
     "merge_pull_request",
-    "create_pull_request_review",
+    "pull_request_review_write",
 }
 
 
@@ -90,6 +114,7 @@ class Agent:
         self.mcp_host = mcp_host
         self.tracker = EvalTracker()
         self._http = httpx.AsyncClient(timeout=60.0)
+        self.inference = AsyncInferenceClient(model=MODEL, token=API_TOKEN)
         # Registry for pending tool approvals {turn_id: asyncio.Future}
         self.pending_approvals: dict[str, asyncio.Future[bool]] = {}
 
@@ -130,10 +155,15 @@ class Agent:
         tools = GITHUB_TOOLS
 
         # ── Agent loop ────────────────────────────────────────────────
+        # Track (tool_name, args_json) pairs we've already executed this turn
+        # to prevent the model from looping on the same failing call.
+        seen_calls: set[str] = set()
+        approval_counter = 0  # unique ID per sensitive tool call within this turn
+
         for iteration in range(MAX_ITERATIONS):
             logger.info("Agent iteration %d/%d", iteration + 1, MAX_ITERATIONS)
 
-            message: dict[str, Any] = {"role": "assistant", "content": "", "tool_calls": []}
+            message: dict[str, Any] = {"role": "assistant", "content": None, "tool_calls": []}
             finish_reason = None
             first_chunk = True
 
@@ -161,10 +191,13 @@ class Agent:
                 if choice.get("finish_reason"):
                     finish_reason = choice["finish_reason"]
 
-                # Text streaming
+                # Text streaming — accumulate into content (upgrade None → str on first token)
                 if delta.get("content"):
                     text = delta["content"]
-                    message["content"] += text
+                    if message["content"] is None:
+                        message["content"] = text
+                    else:
+                        message["content"] += text
                     yield {"type": "token", "content": text}
 
                 # Tool call streaming accumulation
@@ -184,10 +217,20 @@ class Agent:
                         if func_delta.get("arguments"):
                             tc_accum["function"]["arguments"] += func_delta["arguments"]
 
-            # Append assistant message to history
-            # Remove empty tool_calls list if no tools were called
+            # Append assistant message to history.
+            # HuggingFace (and most OpenAI-compatible APIs) reject content="" or
+            # content=None when tool_calls are present — drop the key entirely
+            # if there was no text, and drop tool_calls if empty.
             if not message["tool_calls"]:
                 del message["tool_calls"]
+            if message["content"] is None or message["content"] == "":
+                # Only keep content if it has actual text
+                if message.get("tool_calls"):
+                    # Pure tool-call turn: content must be absent or null, never ""
+                    del message["content"]
+                else:
+                    # Pure text turn with nothing: keep null so role is still valid
+                    message["content"] = None
             messages.append(message)
 
             # Check for tool calls
@@ -212,22 +255,25 @@ class Agent:
 
                 # ── HITL: Check for Sensitive Tools ──────────────────
                 if tool_name in SENSITIVE_TOOLS:
-                    logger.info("Sensitive tool detected: %s. Waiting for approval...", tool_name)
+                    approval_id = f"{turn_id}_{approval_counter}"
+                    approval_counter += 1
+                    logger.info("Sensitive tool detected: %s [approval_id=%s]. Waiting for approval...", tool_name, approval_id)
                     yield {
                         "type": "approval_required",
                         "turn_id": turn_id,
+                        "approval_id": approval_id,
                         "tool": tool_name,
                         "args": arguments
                     }
                     
                     # Wait for the API to satisfy the future
                     loop = asyncio.get_running_loop()
-                    self.pending_approvals[turn_id] = loop.create_future()
+                    self.pending_approvals[approval_id] = loop.create_future()
                     
                     try:
-                        approved = await self.pending_approvals[turn_id]
+                        approved = await self.pending_approvals[approval_id]
                     finally:
-                        self.pending_approvals.pop(turn_id, None)
+                        self.pending_approvals.pop(approval_id, None)
                     
                     if not approved:
                         logger.warning("Tool '%s' rejected by user.", tool_name)
@@ -240,6 +286,56 @@ class Agent:
                 logger.info("Calling tool: %s(%s)", tool_name, arguments)
                 yield {"type": "tool_start", "tool": tool_name, "args": arguments}
 
+                # ── Hallucination guard ───────────────────────────────
+                # The model sometimes fabricates a tool *result* and passes it
+                # back as the *arguments* of the next call, e.g.:
+                #   get_file_contents({"content": "# agent.py..."})
+                #   get_repository_tree({"files": [...]})
+                #   list_branches({"branches": [...]})
+                # Detect this by checking whether any argument key falls
+                # outside the tool's declared parameter schema.
+                valid_params = TOOL_PARAM_NAMES.get(tool_name)
+                if valid_params is None:
+                    # The model called a tool that doesn't exist at all.
+                    logger.warning("Unknown tool '%s' called — rejecting.", tool_name)
+                    tool_content = json.dumps({
+                        "error": f"'{tool_name}' is not a recognised tool. Do NOT invent tool names. Stop and explain to the user what you were trying to do.",
+                    })
+                    yield {"type": "tool_end", "tool": tool_name, "preview": "Unknown tool — rejected", "is_error": True}
+                    messages.append({"role": "tool", "tool_call_id": tc.get("id", ""), "content": tool_content})
+                    continue
+
+                unknown_keys = set(arguments.keys()) - valid_params
+                if unknown_keys:
+                    logger.warning(
+                        "Hallucination detected: tool '%s' called with unrecognised arg keys %s (valid: %s)",
+                        tool_name, unknown_keys, valid_params,
+                    )
+                    tool_content = json.dumps({
+                        "error": (
+                            f"Invalid arguments for '{tool_name}': unrecognised keys {sorted(unknown_keys)}. "
+                            f"Valid parameters are: {sorted(valid_params)}. "
+                            "You appear to have passed a previous tool result as arguments. "
+                            "Do NOT retry. Summarise what you know and respond to the user."
+                        )
+                    })
+                    yield {"type": "tool_end", "tool": tool_name, "preview": f"Hallucination detected — unrecognised keys {unknown_keys}", "is_error": True}
+                    messages.append({"role": "tool", "tool_call_id": tc.get("id", ""), "content": tool_content})
+                    continue
+
+                # ── Dedup guard ───────────────────────────────────────
+                # Prevent infinite retry loops on an identical failing call.
+                call_fingerprint = f"{tool_name}:{json.dumps(arguments, sort_keys=True)}"
+                if call_fingerprint in seen_calls:
+                    logger.warning("Duplicate tool call detected: %s — skipping.", call_fingerprint)
+                    tool_content = json.dumps({
+                        "error": f"This exact call to '{tool_name}' was already made and failed this turn. Do NOT retry it. Explain the failure to the user instead."
+                    })
+                    yield {"type": "tool_end", "tool": tool_name, "preview": "Duplicate call — skipped", "is_error": True}
+                    messages.append({"role": "tool", "tool_call_id": tc.get("id", ""), "content": tool_content})
+                    continue
+                seen_calls.add(call_fingerprint)
+
                 try:
                     result = await self.mcp_host.call_tool(tool_name, arguments)
                     self.tracker.record_tool_call(tool_name, success=True)
@@ -247,7 +343,28 @@ class Agent:
                     yield {"type": "tool_end", "tool": tool_name, "preview": tool_content}
                 except Exception as exc:
                     self.tracker.record_tool_call(tool_name, success=False)
-                    tool_content = json.dumps({"error": str(exc)})
+                    error_msg = str(exc)
+
+                    # For file-fetch tools, add a hard reinforcement so the model
+                    # does not fall back to synthesising content from training data.
+                    if tool_name in {"get_file_contents", "get_repository_tree"}:
+                        extra = (
+                            " CRITICAL: Do NOT generate, guess, or reconstruct the file or "
+                            "directory contents from your training data. You have no knowledge "
+                            "of what this file contains. Tell the user the fetch failed and stop."
+                        )
+                    else:
+                        extra = (
+                            " Do NOT call this tool again with the same arguments. "
+                            "Do NOT pass this error as arguments to another tool."
+                        )
+
+                    tool_content = json.dumps({
+                        "error": error_msg,
+                        "instruction": (
+                            "This tool call failed." + extra
+                        )
+                    })
                     logger.error("Tool '%s' error: %s", tool_name, exc)
                     yield {"type": "tool_end", "tool": tool_name, "preview": f"Error: {exc}", "is_error": True}
 
@@ -270,46 +387,55 @@ class Agent:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None,
     ):
-        """Make a streaming call to the completions API."""
-        payload: dict[str, Any] = {
-            "model": MODEL,
+        """Make a streaming call to the HF Inference API via AsyncInferenceClient."""
+
+        # Build kwargs for HF chat_completion
+        kwargs: dict[str, Any] = {
             "messages": messages,
             "temperature": 0.1,
+            "max_tokens": 4096,
             "stream": True,
-            "stream_options": {"include_usage": True}
         }
         if tools:
-            payload["tools"] = tools
-            payload["tool_choice"] = "auto"
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = "auto"
 
-        headers = {
-            "Authorization": f"Bearer {API_KEY}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://github.com/yukihim/ZOLT",
-            "X-Title": "ZOLT",
-        }
+        logger.info("Calling HF Inference API [model=%s]", MODEL)
 
-        async with self._http.stream(
-            "POST", API_BASE_URL, json=payload, headers=headers
-        ) as response:
-            if not response.is_success:
-                err_bytes = await response.aread()
-                logger.error(
-                    "LLM API error %s: %s",
-                    response.status_code,
-                    err_bytes.decode(errors='replace')
-                )
-                response.raise_for_status()
+        stream = await self.inference.chat_completion(**kwargs)
 
-            async for line in response.aiter_lines():
-                if line.startswith("data: "):
-                    data_str = line[6:].strip()
-                    if data_str == "[DONE]":
-                        break
-                    try:
-                        chunk_data = json.loads(data_str)
-                        # DEBUG: Log the raw chunk structure to catch tool-calling leaks
-                        logger.debug("RAW_LLM_CHUNK: %s", data_str)
-                        yield chunk_data
-                    except json.JSONDecodeError:
-                        pass
+        async for chunk in stream:
+            # chunk is a ChatCompletionStreamOutput object — convert to dict
+            # so the existing agent loop can consume it unchanged.
+            choices_out = []
+            for ch_choice in (chunk.choices or []):
+                delta_dict: dict[str, Any] = {}
+                if ch_choice.delta:
+                    if ch_choice.delta.content:
+                        delta_dict["content"] = ch_choice.delta.content
+                    if ch_choice.delta.tool_calls:
+                        tc_list = []
+                        for tc in ch_choice.delta.tool_calls:
+                            tc_dict: dict[str, Any] = {"index": tc.index}
+                            if tc.id:
+                                tc_dict["id"] = tc.id
+                            if tc.function:
+                                func: dict[str, str] = {}
+                                if tc.function.name:
+                                    func["name"] = tc.function.name
+                                if tc.function.arguments:
+                                    func["arguments"] = tc.function.arguments
+                                tc_dict["function"] = func
+                            tc_list.append(tc_dict)
+                        delta_dict["tool_calls"] = tc_list
+
+                choices_out.append({
+                    "delta": delta_dict,
+                    "finish_reason": ch_choice.finish_reason,
+                })
+
+            yield {
+                "choices": choices_out,
+                "model": MODEL,
+                "usage": getattr(chunk, "usage", None),
+            }

@@ -134,6 +134,7 @@ function ChatPanel({ apiBase }) {
                   last.blocks.push({ 
                     type: 'approval', 
                     turnId: data.turn_id, 
+                    approvalId: data.approval_id,
                     tool: data.tool, 
                     args: data.args,
                     status: 'pending' 
@@ -162,22 +163,21 @@ function ChatPanel({ apiBase }) {
     }
   };
   
-  const handleApproval = async (turnId, approved) => {
+  const handleApproval = async (turnId, approvalId, approved) => {
     try {
       const res = await fetch(`${apiBase}/api/chat/approve`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ turn_id: turnId, approved }),
+        body: JSON.stringify({ turn_id: turnId, approval_id: approvalId, approved }),
       });
       if (!res.ok) throw new Error('Failed to send approval');
       
       // Update UI state to show decision
       setMessages((prev) => {
         const newMsgs = [...prev];
-        // Find the block across all messages (usually the last one)
         for (let m of newMsgs) {
             if (m.blocks) {
-                const block = m.blocks.find(b => b.type === 'approval' && b.turnId === turnId);
+                const block = m.blocks.find(b => b.type === 'approval' && b.approvalId === approvalId);
                 if (block) {
                     block.status = approved ? 'approved' : 'rejected';
                     break;

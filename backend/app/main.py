@@ -148,6 +148,7 @@ class ChatResponse(BaseModel):
 
 class ApprovalRequest(BaseModel):
     turn_id: str
+    approval_id: str
     approved: bool
 
 
@@ -184,14 +185,14 @@ async def approve_chat(request: ApprovalRequest):
     if agent is None:
         raise HTTPException(status_code=503, detail="Agent not initialized")
 
-    if request.turn_id not in agent.pending_approvals:
-        raise HTTPException(status_code=404, detail="No pending tool call found for this turn ID")
+    if request.approval_id not in agent.pending_approvals:
+        raise HTTPException(status_code=404, detail="No pending tool call found for this approval ID")
 
     # Set the result of the future to resume the agent loop
-    future = agent.pending_approvals[request.turn_id]
+    future = agent.pending_approvals[request.approval_id]
     if not future.done():
         future.set_result(request.approved)
-        logger.info("Turn [%s] %s by user", request.turn_id, "APPROVED" if request.approved else "REJECTED")
+        logger.info("Approval [%s] %s by user", request.approval_id, "APPROVED" if request.approved else "REJECTED")
     
     return {"status": "ok"}
 
