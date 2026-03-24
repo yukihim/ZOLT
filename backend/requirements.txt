@@ -7,3 +7,4 @@ python-dotenv==1.0.1
 prometheus-client==0.21.1
 pydantic==2.10.4
 huggingface_hub
+aiofiles==24.1.0

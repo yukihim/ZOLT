@@ -3,7 +3,7 @@ import ChatPanel from './components/ChatPanel';
 import MetricsChart from './components/MetricsChart';
 import ServerStatus from './components/ServerStatus';
 
-const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+const API_BASE = process.env.REACT_APP_API_URL !== undefined ? process.env.REACT_APP_API_URL : (window.location.origin === 'http://localhost:3000' ? 'http://localhost:8000' : window.location.origin);
 
 function App() {
   const [health, setHealth] = useState(null);

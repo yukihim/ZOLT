@@ -28,7 +28,8 @@ from prometheus_client import (
     generate_latest,
     CONTENT_TYPE_LATEST,
 )
-from fastapi.responses import StreamingResponse, Response
+from fastapi.responses import StreamingResponse, Response, FileResponse
+from fastapi.staticfiles import StaticFiles
 
 # ── Bootstrap ─────────────────────────────────────────────────────────
 
@@ -133,6 +134,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ── Static Files (Frontend) ───────────────────────────────────────────
+# Mount the built frontend static directory
+# This should match where the root Dockerfile places the 'build' folder
+STATIC_DIR = os.path.join(PROJECT_ROOT, "backend", "static")
+if os.path.isdir(STATIC_DIR):
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
 # ── Request / Response Models ─────────────────────────────────────────
 
 
@@ -232,3 +240,15 @@ async def prometheus_metrics():
         content=generate_latest(),
         media_type=CONTENT_TYPE_LATEST,
     )
+
+
+# ── Catch-all route for React ─────────────────────────────────────────
+@app.get("/{rest_of_path:path}")
+async def serve_index(rest_of_path: str):
+    """Serve index.html for any unknown route (React client routing)."""
+    # If the file exists in the static dir, the StaticFiles mount should have caught it.
+    # Otherwise, serve index.html.
+    index_path = os.path.join(STATIC_DIR, "index.html")
+    if os.path.isfile(index_path):
+        return FileResponse(index_path)
+    return {"error": "Frontend static files not found. Ensure the build folder exists."}
