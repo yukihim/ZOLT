@@ -37,7 +37,7 @@ from huggingface_hub import AsyncInferenceClient
 
 from custom_mcp_sdk import MCPHost
 
-from .evals import EvalTracker, TurnMetrics
+from .evals import EvalTracker
 
 logger = logging.getLogger("zolt.agent")
 
@@ -46,12 +46,12 @@ logger = logging.getLogger("zolt.agent")
 API_TOKEN = os.getenv("API_TOKEN")
 MODEL = os.getenv("MODEL", "openai/gpt-oss-20b")
 
-SYSTEM_PROMPT = """\
-You are ZOLT, an AI IT Operations Coordinator. You help manage system health, \
+SYSTEM_PROMPT = """
+You are ZOLT, an AI IT Operations Coordinator. You help manage system health, 
 triage bug reports, and retrieve documentation.
 
 ### CORE OPERATING PRINCIPLE
-You have access to real-time tools via function calling. When a user asks about \
+You have access to real-time tools via function calling. When a user asks about 
 GitHub repositories, commits, issues, or code — you MUST use the available tools.
 NEVER summarize or guess if you can fetch real data.
 
@@ -102,8 +102,7 @@ SENSITIVE_TOOLS = {
 }
 
 
-# ── Agent ─────────────────────────────────────────────────────────────
-
+# ── Agent ─────────────────────────────────────────────────────────────────────────
 
 class Agent:
     """
@@ -244,7 +243,7 @@ class Agent:
                 yield {"type": "done", "metrics": metrics.to_dict()}
                 return
 
-            # ── Execute tool calls ────────────────────────────────────
+            # ── Execute tool calls ─────────────────────────────────────────────────
             for tc in tool_calls:
                 func = tc.get("function", {})
                 tool_name = func.get("name", "")
@@ -253,7 +252,7 @@ class Agent:
                 except json.JSONDecodeError:
                     arguments = {}
 
-                # ── HITL: Check for Sensitive Tools ──────────────────
+                # ── HITL: Check for Sensitive Tools ───────────────────────────────
                 if tool_name in SENSITIVE_TOOLS:
                     approval_id = f"{turn_id}_{approval_counter}"
                     approval_counter += 1
