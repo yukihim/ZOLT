@@ -25,21 +25,21 @@ import httpx
 
 from custom_mcp_sdk import MCPHost
 
-from .evals import EvalTracker, TurnMetrics
+from .evals import EvalTracker
 
 logger = logging.getLogger("zolt.agent")
 
-# ── Provider-Agnostic LLM API Configuration ──────────────────────────
+# ── Provider-Agnostic LLM API Configuration ─────────────────────────────────────
 API_BASE_URL = os.getenv("API_BASE_URL", "https://openrouter.ai/api/v1/chat/completions")
 API_KEY = os.getenv("API_KEY", os.getenv("OPENROUTER_API_KEY", ""))
 MODEL = os.getenv("MODEL", os.getenv("OPENROUTER_MODEL", "deepseek/deepseek-r1:free"))
 
-SYSTEM_PROMPT = """\
-You are ZOLT, an AI IT Operations Coordinator. You help manage system health, \
+SYSTEM_PROMPT = """
+You are ZOLT, an AI IT Operations Coordinator. You help manage system health, 
 triage bug reports, and retrieve documentation.
 
 ### CORE OPERATING PRINCIPLE
-You have access to real-time tools via function calling. When a user asks about \
+You have access to real-time tools via function calling. When a user asks about 
 GitHub repositories, commits, issues, or code — you MUST use the available tools.
 NEVER summarize or guess if you can fetch real data.
 
@@ -49,8 +49,8 @@ NEVER summarize or guess if you can fetch real data.
 - If you need to call a tool, call it directly via the API side-channel.
 - Your goal is to be accurate; always call the appropriate tool first.
 
-The user's default GitHub repository is "yukihim/ZOLT". If the user asks general \
-questions like "latest commit?", "what are my issues?", or refers to "this project", \
+The user's default GitHub repository is "yukihim/ZOLT". If the user asks general 
+questions like "latest commit?", "what are my issues?", or refers to "this project", 
 you MUST assume they are asking about owner="yukihim" and repo="ZOLT" without asking for help.
 
 If a tool call fails, explain the exact error clearly."""
@@ -78,8 +78,7 @@ SENSITIVE_TOOLS = {
 }
 
 
-# ── Agent ─────────────────────────────────────────────────────────────
-
+# ── Agent ─────────────────────────────────────────────────────────────────────────
 
 class Agent:
     """
@@ -129,7 +128,7 @@ class Agent:
         # Get available tools from MCP host
         tools = GITHUB_TOOLS
 
-        # ── Agent loop ────────────────────────────────────────────────
+        # ── Agent loop ─────────────────────────────────────────────────────────────
         for iteration in range(MAX_ITERATIONS):
             logger.info("Agent iteration %d/%d", iteration + 1, MAX_ITERATIONS)
 
@@ -201,7 +200,7 @@ class Agent:
                 yield {"type": "done", "metrics": metrics.to_dict()}
                 return
 
-            # ── Execute tool calls ────────────────────────────────────
+            # ── Execute tool calls ─────────────────────────────────────────────────
             for tc in tool_calls:
                 func = tc.get("function", {})
                 tool_name = func.get("name", "")
@@ -210,7 +209,7 @@ class Agent:
                 except json.JSONDecodeError:
                     arguments = {}
 
-                # ── HITL: Check for Sensitive Tools ──────────────────
+                # ── HITL: Check for Sensitive Tools ───────────────────────────────
                 if tool_name in SENSITIVE_TOOLS:
                     logger.info("Sensitive tool detected: %s. Waiting for approval...", tool_name)
                     yield {
